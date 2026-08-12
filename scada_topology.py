@@ -1,4 +1,5 @@
 import argparse
+import json
 import shlex
 import threading
 import time
@@ -20,7 +21,10 @@ class ExperimentController:
         self.last_attack_count = 0
         self.last_attack_rejected = 0
         self.last_attack_errors = 0
+        self.last_attack_blocked = 0
         self.last_natural_failures = 0
+        self.last_battery_connection_blocked = 0
+        self.last_battery_rate_blocked = 0
         self.last_metric_time = time.time()
         self.monitor_stop = threading.Event()
 
@@ -29,10 +33,30 @@ class ExperimentController:
             return self.pids[key]
         host = self.hosts[host_name]
         host.cmd(f"rm -f /tmp/{key}.log")
-        pid = host.cmd(f"{command} > /tmp/{key}.log 2>&1 & echo $!").strip().splitlines()[-1]
+        output = host.cmd(f"{command} > /tmp/{key}.log 2>&1 & echo $!").strip().splitlines()
+        pid = output[-1] if output else self.find_service_pid(key, host)
+        if not pid:
+            raise RuntimeError(f"started {key} but could not determine pid")
         self.pids[key] = pid
         self.publish_status(f"started {key} on {host_name} pid={pid}")
         return pid
+
+    def find_service_pid(self, key, host):
+        pattern = {
+            "plc_server": "plc_server.py",
+            "energy_state_api": "energy_state_api.py",
+            "battery_device": "battery_device.py",
+            "natural_activity": "natural_activity.py",
+            "external_battery_activity": "external_battery_activity.py",
+            "ddos_attack": "attack_generator.py",
+        }.get(key, key)
+        output = host.cmd(f"pgrep -f {shlex.quote(pattern)} | tail -n 1 || true").strip().splitlines()
+        return output[-1] if output else ""
+
+    @staticmethod
+    def last_counter_line(text, default="0"):
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        return lines[-1] if lines else default
 
     def stop_service(self, key):
         pid = self.pids.get(key)
@@ -59,8 +83,20 @@ class ExperimentController:
     def start_baseline(self):
         self.start_service("plc_server", "plc", "python3 plc_server.py")
         self.start_service("energy_state_api", "state_api", "python3 energy_state_api.py --host 0.0.0.0 --port 8080")
-        self.start_service("battery_device", "battery", "python3 battery_device.py --host 0.0.0.0 --port 8081 --capacity 20 --overload-mode delay --overload-delay 3")
+        self.start_service("battery_device", "battery", "python3 battery_device.py --host 0.0.0.0 --port 8081 --capacity 20 --worker-slots 4 --queue-timeout 0.2 --normal-service-time 0.05 --malformed-service-time 0.2")
+        self.write_battery_policy(ids_dashboard.STATE.config)
         self.publish_status("baseline services running")
+
+    def write_battery_policy(self, config):
+        payload = {
+            "connection_limiting_enabled": bool(config["connection_limiting_enabled"]),
+            "rate_limiting_enabled": bool(config["rate_limiting_enabled"]),
+            "conn_threshold": max(0, int(config["conn_threshold"])),
+            "frame_rate_limit": max(0, int(config["frame_rate_limit"])),
+            "allowlist": config["allowlist"],
+        }
+        policy = shlex.quote(json.dumps(payload, separators=(",", ":")))
+        self.hosts["battery"].cmd(f"printf %s {policy} > /tmp/battery_policy.json")
 
     def start_metrics_monitor(self):
         threading.Thread(target=self.metrics_monitor_loop, daemon=True).start()
@@ -79,18 +115,24 @@ class ExperimentController:
         natural_running = self.is_running("natural_activity")
         external_running = self.is_running("external_battery_activity")
 
-        hmi_count_text = self.hosts["hmi"].cmd(
+        hmi_count_text = self.last_counter_line(self.hosts["hmi"].cmd(
             "test -f /tmp/natural_activity.log && grep -c '^natural_activity:' /tmp/natural_activity.log || echo 0"
-        ).strip().splitlines()[-1]
-        external_ok_text = self.hosts["state_api"].cmd(
-            "test -f /tmp/external_battery_activity.log && grep -c 'status_result=ok' /tmp/external_battery_activity.log || echo 0"
-        ).strip().splitlines()[-1]
-        natural_failure_text = self.hosts["state_api"].cmd(
-            "test -f /tmp/external_battery_activity.log && grep -Ec 'status_result=(http_|error:)|control=(http_|error:)' /tmp/external_battery_activity.log || echo 0"
-        ).strip().splitlines()[-1]
-        attack_count_text = self.hosts["attacker"].cmd(
+        ))
+        external_ok_text = self.last_counter_line(self.hosts["state_api"].cmd(
+            "test -f /tmp/external_battery_activity.log && grep -c 'request_result=ok' /tmp/external_battery_activity.log || echo 0"
+        ))
+        natural_failure_text = self.last_counter_line(self.hosts["state_api"].cmd(
+            "test -f /tmp/external_battery_activity.log && grep -Ec 'request_result=(http_|error:)' /tmp/external_battery_activity.log || echo 0"
+        ))
+        attack_count_text = self.last_counter_line(self.hosts["attacker"].cmd(
             "test -f /tmp/ddos_attack.log && grep -c '^attack_activity:' /tmp/ddos_attack.log || echo 0"
-        ).strip().splitlines()[-1]
+        ))
+        battery_connection_blocked_text = self.last_counter_line(self.hosts["battery"].cmd(
+            "test -f /tmp/battery_device.log && grep -c '^battery_blocked .*reason=connection_limit' /tmp/battery_device.log || echo 0"
+        ))
+        battery_rate_blocked_text = self.last_counter_line(self.hosts["battery"].cmd(
+            "test -f /tmp/battery_device.log && grep -c '^battery_blocked .*reason=rate_limit' /tmp/battery_device.log || echo 0"
+        ))
         attack_tail = self.hosts["attacker"].cmd(
             "test -f /tmp/ddos_attack.log && grep '^attack_activity:' /tmp/ddos_attack.log | tail -n 1 || true"
         ).strip()
@@ -99,11 +141,16 @@ class ExperimentController:
         external_ok = int(external_ok_text or "0")
         natural_failures = int(natural_failure_text or "0")
         attack_count = int(attack_count_text or "0")
+        battery_connection_blocked = int(battery_connection_blocked_text or "0")
+        battery_rate_blocked = int(battery_rate_blocked_text or "0")
         attack_rejected = self.last_attack_rejected
         attack_errors = self.last_attack_errors
+        attack_blocked = self.last_attack_blocked
         for token in attack_tail.split():
             if token.startswith("rejected="):
                 attack_rejected = int(token.split("=", 1)[1])
+            elif token.startswith("blocked="):
+                attack_blocked = int(token.split("=", 1)[1])
             elif token.startswith("errors="):
                 attack_errors = int(token.split("=", 1)[1])
 
@@ -112,28 +159,39 @@ class ExperimentController:
         attack_delta = max(0, attack_count - self.last_attack_count)
         rejected_delta = max(0, attack_rejected - self.last_attack_rejected)
         attack_error_delta = max(0, attack_errors - self.last_attack_errors)
+        attack_blocked_delta = max(0, attack_blocked - self.last_attack_blocked)
         natural_failure_delta = max(0, natural_failures - self.last_natural_failures)
+        battery_connection_blocked_delta = max(0, battery_connection_blocked - self.last_battery_connection_blocked)
+        battery_rate_blocked_delta = max(0, battery_rate_blocked - self.last_battery_rate_blocked)
         self.last_natural_count = hmi_count
         self.last_external_count = external_ok
         self.last_attack_count = attack_count
         self.last_attack_rejected = attack_rejected
         self.last_attack_errors = attack_errors
+        self.last_attack_blocked = attack_blocked
         self.last_natural_failures = natural_failures
+        self.last_battery_connection_blocked = battery_connection_blocked
+        self.last_battery_rate_blocked = battery_rate_blocked
         self.last_metric_time = now
 
         attack_running = self.is_running("ddos_attack")
-        if natural_running or external_running or attack_running or hmi_delta or external_ok_delta or attack_delta or natural_failure_delta:
+        has_activity = (
+            natural_running or external_running or attack_running or hmi_delta or external_ok_delta or
+            attack_delta or natural_failure_delta or attack_blocked_delta or
+            battery_connection_blocked_delta or battery_rate_blocked_delta
+        )
+        if has_activity:
             hmi_rate = round(hmi_delta / elapsed)
             external_success_rate = round(external_ok_delta / elapsed)
             rejected_rate = round(rejected_delta / elapsed)
             timeout_rate = round((natural_failure_delta + attack_error_delta) / elapsed)
-            successful_rate = (hmi_rate * 2) + external_success_rate
+            successful_rate = external_success_rate
             sources = []
             if natural_running or hmi_delta:
                 sources.append("10.0.2.20")
             if external_running or external_ok_delta or natural_failure_delta:
                 sources.append("10.0.1.20")
-            if attack_running or attack_delta:
+            if attack_running or attack_delta or attack_blocked_delta:
                 sources.append("10.0.1.10")
             ids_dashboard.STATE.update_observed_activity(
                 connection_rate=successful_rate,
@@ -143,32 +201,35 @@ class ExperimentController:
                 successful_rate=successful_rate,
                 rejected_rate=rejected_rate,
                 timeout_rate=timeout_rate,
+                blocked_rate=round(battery_rate_blocked_delta / elapsed),
+                blocked_malformed=round(battery_rate_blocked_delta / elapsed),
+                connections_blocked=round(battery_connection_blocked_delta / elapsed),
                 observed_sources=sources,
                 frames_allowed=(hmi_count * 2) + external_ok,
-                metric_source="success/rejected/timeout log counters",
+                metric_source="success/rejected/timeout/policy log counters",
             )
         else:
             ids_dashboard.STATE.update_observed_activity(metric_source="controller")
-
     def stop_all(self):
         self.monitor_stop.set()
         for key in list(self.pids):
             self.stop_service(key)
 
     def apply_dashboard_config(self, previous, config):
+        self.write_battery_policy(config)
         if config["natural_network_activity"]:
             if not self.is_running("natural_activity"):
                 state_api_url = shlex.quote(config["state_api_url"])
                 self.start_service(
                     "natural_activity",
                     "hmi",
-                    f"python3 natural_activity.py --state-api-url {state_api_url} --interval 0.1",
+                    f"python3 natural_activity.py --state-api-url {state_api_url} --interval 0.5",
                 )
             if not self.is_running("external_battery_activity"):
                 self.start_service(
                     "external_battery_activity",
                     "state_api",
-                    "python3 external_battery_activity.py --battery-url http://10.0.2.50:8081/api/status --interval 0.2 --control-every 10",
+                    "python3 external_battery_activity.py --battery-url http://10.0.2.50:8081/api/status --interval 0.1 --control-every 10 --timeout 1 --concurrency 16",
                 )
         else:
             self.stop_service("natural_activity")
@@ -178,7 +239,7 @@ class ExperimentController:
             self.start_service(
                 "ddos_attack",
                 "attacker",
-                f"python3 attack_generator.py --profile bad_battery_control --target 10.0.2.50:8081 --rate {int(config['attack_connections_per_second'])} --duration {int(config['duration_seconds'])} --wait {int(config['wait_seconds'])}",
+                f"python3 attack_generator.py --profile bad_battery_control --target 10.0.2.50:8081 --rate {int(config['attack_connections_per_second'])} --duration {int(config['duration_seconds'])} --wait {int(config['wait_seconds'])} --concurrency 80 --timeout 1",
             )
         elif config["attack_status"] == "idle":
             self.stop_service("ddos_attack")
@@ -302,8 +363,3 @@ def run():
 if __name__ == '__main__':
     setLogLevel('info')
     run()
-
-
-
-
-

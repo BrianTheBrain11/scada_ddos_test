@@ -60,15 +60,15 @@ class DashboardState:
         self.config = {
             "attack_profile": "modbus_read_flood",
             "burst_rate": 50,
-            "attack_connections_per_second": 10,
+            "attack_connections_per_second": 60,
             "duration_seconds": 30,
             "wait_seconds": 10,
             "connection_limiting_enabled": False,
             "rate_limiting_enabled": False,
             "natural_network_activity": False,
-            "conn_threshold": 20,
-            "frame_rate_limit": 100,
-            "allowlist": "10.0.2.20",
+            "conn_threshold": 8,
+            "frame_rate_limit": 8,
+            "allowlist": "10.0.1.20",
             "state_api_url": "http://10.0.1.20:8080/api/state",
             "attack_status": "idle",
         }
@@ -110,7 +110,7 @@ class DashboardState:
 
         return dict(self.config)
 
-    def update_observed_activity(self, connection_rate=0, modbus_frame_rate=0, external_api_rate=0, bad_control_rate=0, successful_rate=None, rejected_rate=None, timeout_rate=None, observed_sources=None, frames_allowed=None, metric_source="controller"):
+    def update_observed_activity(self, connection_rate=0, modbus_frame_rate=0, external_api_rate=0, bad_control_rate=0, successful_rate=None, rejected_rate=None, timeout_rate=None, blocked_rate=None, blocked_malformed=None, connections_blocked=None, observed_sources=None, frames_allowed=None, metric_source="controller"):
         self.successful_rate = max(0, int(connection_rate if successful_rate is None else successful_rate))
         self.rejected_rate = max(0, int(bad_control_rate if rejected_rate is None else rejected_rate))
         self.timeout_rate = max(0, int(0 if timeout_rate is None else timeout_rate))
@@ -118,6 +118,12 @@ class DashboardState:
         self.modbus_frame_rate = max(0, int(modbus_frame_rate))
         self.external_api_rate = max(0, int(external_api_rate))
         self.bad_control_rate = self.rejected_rate
+        if blocked_rate is not None:
+            self.frames_blocked_rate = max(0, int(blocked_rate))
+        if blocked_malformed is not None:
+            self.frames_blocked_malformed = max(0, int(blocked_malformed))
+        if connections_blocked is not None:
+            self.connections_blocked = max(0, int(connections_blocked))
         self.observed_sources = list(observed_sources or [])
         self.metric_source = metric_source
         if frames_allowed is not None:
@@ -255,8 +261,8 @@ HTML = """<!doctype html>
         <div class="field"><label for="stateApiUrlInput">External state source</label><input id="stateApiUrlInput" type="text"></div>
         <div class="subsection attack-wide"><h3>Mitigation Policy</h3></div>
         <div class="checks attack-wide"><label class="check"><input id="connectionLimitToggle" type="checkbox"> Enable connection limiting</label><label class="check"><input id="rateLimitToggle" type="checkbox"> Enable rate limiting</label></div>
-        <div class="field"><label for="connThreshold">Max connections/sec per source</label><input id="connThreshold" type="number" min="0" max="10000" step="1"></div>
-        <div class="field"><label for="frameRateLimit">Max malformed packets/sec</label><input id="frameRateLimit" type="number" min="0" max="100000" step="1"></div>
+        <div class="field"><label for="connThreshold">Connection limit per source/sec</label><input id="connThreshold" type="number" min="0" max="10000" step="1"></div>
+        <div class="field"><label for="frameRateLimit">Malformed rate limit per source/sec</label><input id="frameRateLimit" type="number" min="0" max="100000" step="1"></div>
         <div class="field"><label for="allowlist">Allowed normal source</label><input id="allowlist" type="text"></div>
         <div class="actions attack-wide"><button class="primary" type="button" onclick="saveConfig('running')">Start Malformed Packet Flood DDoS</button><button class="stop" type="button" onclick="saveConfig('idle')">Stop DDoS</button></div>
         <button class="attack-wide" type="button" onclick="saveConfig(null)">Save Settings</button></div>
