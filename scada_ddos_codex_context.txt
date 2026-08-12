@@ -1,0 +1,195 @@
+SCADA DDoS / IDS TESTBED — PROJECT CONTEXT FOR CODEX
+
+PURPOSE This project supports research work for a paper titled:
+“Cybersecurity of Energy-Sector SCADA Systems: Attack Vectors and
+Defense-in-Depth Mitigations.”
+
+I was asked by Dr. Kaur, the first-listed author, to work specifically
+on the DDoS portion of the research. The intention is to add
+experimental/local-trial results related to DDoS attacks and DDoS
+mitigation rather than leaving that portion of the paper purely
+conceptual.
+
+The work should be a controlled, local cybersecurity research/test
+environment. The target systems are fake/simulated systems under my
+control. I want to be able to “DDoS myself” inside an isolated virtual
+network and collect quantitative results. This is not intended to target
+external systems.
+
+CORE RESEARCH INTENTION I want to construct a local SCADA-oriented
+security testbed in which I can:
+
+-   Create simulated/fake SCADA network devices and endpoints.
+-   Generate controlled DDoS-style traffic against those simulated
+    endpoints.
+-   Define multiple attack profiles.
+-   Configure parameters such as:
+    -   attack type/profile
+    -   burst rate
+    -   attack duration
+    -   wait/pause period between bursts
+-   Observe the attack in real time.
+-   Run an IDS against the traffic.
+-   Measure and display things such as:
+    -   connection rate
+    -   protocol/application frame rate
+    -   rejected/blocked traffic
+    -   allowed traffic
+    -   malformed traffic
+    -   blocked connections
+    -   attack/traffic rates over time
+-   Plot attack activity and IDS observations on graphs.
+-   Enable/disable mitigation.
+-   Experiment with different mitigation mechanisms and parameters.
+-   Compare mitigated and unmitigated trials.
+-   Save quantitative results that can ultimately be used in an academic
+    paper.
+
+SCADA / PROTOCOL CONTEXT The paper is specifically concerned with
+energy-sector SCADA cybersecurity.
+
+The paper discusses DDoS as an availability attack capable of disrupting
+telemetry, delaying operator commands, exhausting constrained PLC/RTU
+resources, and reducing situational awareness.
+
+The paper discusses industrial protocols including: - Modbus/TCP -
+DNP3 - IEC 60870-5-104 - IEC 61850 GOOSE
+
+A particularly relevant reference/example is an existing-looking testbed
+shown by another paper author. Its UI is titled:
+
+“IEC 60870-5-104 Security Testbed — DDoS Simulation & IDS”
+
+The screenshot appears to be a custom locally hosted web application
+(127.0.0.1:5000), rather than necessarily an off-the-shelf program.
+
+The example UI contains:
+
+ATTACK CONTROL — TOOLS → DDOS SIMULATION - Attack profile selector -
+Example profile: “APDU flood (I/U/S frames)” - Burst rate - Duration
+(minutes) - Wait period (seconds) - Start/Stop controls - IDS toggle -
+Mitigation toggle
+
+DEFENSE-IN-DEPTH MITIGATION GATEWAY - Frames allowed - Frames blocked
+(rate) - Frames blocked (malformed) - Connections blocked
+
+It also describes controls such as: - source allowlist / default-deny -
+per-source connection threshold - per-connection frame rate limit /
+token bucket - protocol-aware inspection
+
+IDS/status indicators shown include: - Connection rate - STARTDT rate -
+APDU rate - Malformed rate - severity/status such as GREEN/YELLOW
+
+There is also a rolling-window graph showing these attack/control-plane
+signals over time.
+
+I want to make something broadly like this: a real test
+harness/dashboard backed by our own isolated virtual SCADA network,
+attack generation, IDS measurements, and mitigation controls.
+
+5G CONTEXT We have access to an IEEE 5G/6G Innovation Testbed, but it is
+primarily 5G-oriented.
+
+The immediate goal is NOT to make the entire experiment dependent on 5G.
+I want a software/local SCADA DDoS testbed first. The 5G testbed may be
+relevant to later research or experiments involving SCADA traffic over
+5G, but it is not the immediate requirement.
+
+DEVELOPMENT MACHINE Host: - Windows 11 - Current-generation Intel Core
+i7 - 64 GB RAM
+
+Linux environment: - WSL - Arch Linux
+
+Editor: - Visual Studio Code using the WSL environment.
+
+CURRENT NETWORK-EMULATION SOFTWARE Mininet has been selected as the
+initial virtual-network foundation.
+
+Open vSwitch is installed and working on Arch WSL.
+
+Mininet version: 2.3.1b4
+
+Mininet was installed from its source repository into a Python virtual
+environment because Arch’s system Python is externally managed.
+
+Mininet source/environment: ~/mininet/
+
+Python virtual environment: ~/mininet/.venv/
+
+Python interpreter: ~/mininet/.venv/bin/python
+
+VS Code should use: /home/creep/mininet/.venv/bin/python
+
+Mininet/Open vSwitch has already been tested successfully with:
+
+sudo -E $(pwd)/.venv/bin/mn –switch ovsbr –test pingall
+
+The result was: 0% dropped (2/2 received)
+
+Therefore Mininet virtual hosts, links, and Open vSwitch networking are
+confirmed operational under the current WSL setup.
+
+ARCH/WSL DEPENDENCIES ALREADY ENCOUNTERED The setup required packages
+including: - python - python-pip - git - openvswitch - iproute2 -
+iperf3 - tcpdump - python-pyflakes - help2man - inetutils (for telnet) -
+net-tools (for ifconfig)
+
+Open vSwitch services have been started successfully.
+
+PROJECT DIRECTORY The research/testbed project is separate from the
+Mininet source tree.
+
+Current project directory: ~/scada_ddos_test/
+
+A file named: scada_topology.py
+
+has been started/created there.
+
+Because Mininet exists in ~/mininet/.venv rather than a project-local
+venv, scripts requiring Mininet/root networking privileges should
+currently be run using the Mininet venv’s Python, for example:
+
+sudo -E ~/mininet/.venv/bin/python scada_topology.py
+
+INITIAL TOPOLOGY INTENTION The first basic topology being considered
+consists of roles such as:
+
+                 attacker
+                     |
+                     |
+
+HMI ————— switch ————— PLC | | IDS
+
+Example virtual addresses discussed: attacker: 10.0.0.10 HMI: 10.0.0.20
+PLC: 10.0.0.30 IDS: 10.0.0.40
+
+These addresses/topology are not research requirements; they are just an
+initial simple virtual layout and may be changed as implementation
+develops.
+
+IMPORTANT WORKING STYLE Work with me in SMALL CHUNKS.
+
+Do not dump an entire finished architecture or dozens of files at once.
+
+I want to develop and understand the system incrementally: 1. Make one
+small component work. 2. Test/verify it. 3. Then move to the next
+component.
+
+When helping with implementation, prefer concrete, immediately testable
+steps.
+
+Do not assume implementation plans previously suggested by ChatGPT are
+requirements. The requirements/intents in this document are what I
+actually want to accomplish; implementation details can evolve as we
+work.
+
+END GOAL The eventual system should be a reproducible, isolated SCADA
+cybersecurity testbed capable of producing controlled DDoS experiments
+and mitigation/IDS measurements suitable for quantitative analysis and
+potentially inclusion in the SCADA cybersecurity research paper.
+
+The desired experience is similar to the IEC-104 Security Testbed
+screenshot: launch a local interface, select/configure an attack
+profile, run it against simulated SCADA infrastructure, observe IDS
+metrics/graphs, enable or configure mitigations, repeat the experiment,
+and collect comparable results.
